@@ -15,8 +15,8 @@ ExecStart=/usr/bin/podman run \
   --name bmw-loxone-bridge \
   --rm \
   --env-file /var/containers/bmw-loxone-bridge/.env \
-  -p 8080:8080 \
-  -v /var/containers/bmw-loxone-bridge/data:/data:Z \
+  --publish 8300:8080 \
+  --volume /var/containers/bmw-loxone-bridge/data:/data:Z \
   bmw-loxone-bridge:latest
 
 ExecStop=/usr/bin/podman stop bmw-loxone-bridge
