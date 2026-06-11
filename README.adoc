@@ -1,0 +1,591 @@
+= BMW CarData to Loxone HTTP Bridge
+:toc: macro
+:toc-title: Contents
+:toclevels: 3
+:icons: font
+:source-highlighter: rouge
+
+A lightweight containerized bridge that exposes BMW vehicle telemetry data via HTTP endpoints for consumption by Loxone Miniservers (or any HTTP client).
+
+toc::[]
+
+== Overview
+
+This application connects to the https://bmw-cardata.bmwgroup.com/thirdparty/public/home[BMW CarData API] (EU only, free) and makes all available vehicle data accessible through simple HTTP endpoints. It is designed to run as an always-on Podman (or Docker) container on your home server.
+
+=== How It Works
+
+[source,text]
+----
+BMW Vehicle
+  │  (telemetry events)
+  ▼
+BMW MQTT Broker (real-time streaming, unlimited)
+  │
+  ▼
+bmw-loxone-bridge (Go, ~10 MB container)
+  ├── MQTT subscriber (live updates)
+  ├── REST API fallback (initial data on startup, 50 calls/day limit)
+  └── HTTP server (:8080)
+        │
+        ▼
+Loxone Miniserver (polls via Virtual HTTP Input)
+----
+
+On startup the bridge authenticates via OAuth 2.0 Device Code flow, fetches an initial snapshot of all telemetry data through the BMW REST API, then subscribes to the MQTT stream for real-time updates. All data points are served through flat JSON or plain-text HTTP endpoints optimized for Loxone's limited JSON parser.
+
+=== Key Features
+
+* **290+ data points** exposed from a BMW 225e (PHEV), including battery, charging, fuel, location, doors, windows, and more
+* **Real-time MQTT streaming** — unlimited, no rate limits
+* **Adaptive REST polling** — every 5 minutes while charging, every 30 minutes when idle (configurable)
+* **Manual refresh** — `POST /api/refresh` for instant data updates
+* **REST API initial fetch** — populates all data on startup so endpoints are never empty
+* **Plain-text single-value endpoints** (`/api/raw/{name}`) — simplest possible Loxone integration
+* **~10 MB container image** — distroless, runs as non-root
+* **Automatic token refresh** — re-authentication only needed if the container is stopped for more than 2 weeks
+
+== Prerequisites
+
+=== BMW CarData Portal Setup
+
+. Register at https://bmw-cardata.bmwgroup.com/thirdparty/public/home
+. Create a **Client ID** under "My Clients"
+. Enable permissions for both **CarData API** and **CarData Stream**
+. Note your **Client ID** (UUID format)
+. Note your vehicle's **VIN** (17 characters, found in your BMW app or registration documents)
+
+IMPORTANT: You must be the **primary user** (main driver / admin) for the vehicle in your BMW ID account.
+
+=== Container Runtime
+
+* https://podman.io/[Podman] or https://www.docker.com/[Docker]
+
+== Quick Start
+
+=== Build the Container Image
+
+[source,bash]
+----
+git clone <repository-url>
+cd bmw-loxone-bridge
+podman build -t bmw-loxone-bridge .
+----
+
+=== Configure
+
+Copy the example environment file and fill in your credentials:
+
+[source,bash]
+----
+cp env.example .env
+# Edit .env with your BMW_CLIENT_ID and BMW_VIN
+----
+
+IMPORTANT: `.env` contains secrets and is excluded from git via `.gitignore`. Never commit it.
+
+=== Run (Development)
+
+[source,bash]
+----
+./run.sh
+----
+
+This stops any existing container and starts a fresh one using the variables from `.env`.
+
+=== Install as systemd Service (Fedora)
+
+[source,bash]
+----
+# Create the data directory
+sudo mkdir -p /var/containers/bmw-loxone-bridge/data
+
+# Copy the environment file and edit credentials
+sudo cp env.example /var/containers/bmw-loxone-bridge/.env
+sudo vi /var/containers/bmw-loxone-bridge/.env
+
+# Build the container image
+podman build -t bmw-loxone-bridge .
+
+# Install and enable the service
+sudo cp bmw-loxone-bridge.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now bmw-loxone-bridge
+----
+
+Check status and logs:
+
+[source,bash]
+----
+sudo systemctl status bmw-loxone-bridge
+sudo journalctl -u bmw-loxone-bridge -f
+----
+
+=== First-Run Authentication
+
+On the first run, the bridge initiates the BMW OAuth Device Code flow. Check the container logs for the authentication prompt:
+
+[source,bash]
+----
+# Development
+podman logs -f bmw-loxone-bridge
+
+# systemd
+sudo journalctl -u bmw-loxone-bridge -f
+----
+
+You will see output like:
+
+[source,text]
+----
+=== BMW CarData Authentication ===
+Open:  https://customer.bmwgroup.com/oneid/link
+Code:  c6KKeXXH
+Waiting for authentication...
+----
+
+. Open the URL in your browser
+. Log in with your BMW ID
+. Enter the code shown in the logs
+. The bridge will authenticate and start serving data
+
+The session token is persisted to the `/data` volume. Subsequent restarts reuse it automatically.
+
+=== Verify
+
+[source,bash]
+----
+# Health check
+curl http://localhost:8080/api/health
+
+# All vehicle data
+curl http://localhost:8080/api/vehicle
+
+# Single value
+curl http://localhost:8080/api/raw/battery_soc
+----
+
+== Configuration
+
+All configuration is via environment variables.
+
+[cols="2,1,1,4", options="header"]
+|===
+| Variable | Required | Default | Description
+
+| `BMW_CLIENT_ID`
+| Yes
+| —
+| UUID from the BMW CarData portal
+
+| `BMW_VIN`
+| Yes
+| —
+| 17-character Vehicle Identification Number
+
+| `LISTEN_ADDR`
+| No
+| `:8080`
+| HTTP server bind address
+
+| `DATA_DIR`
+| No
+| `/data`
+| Directory for session token persistence
+
+| `LOG_LEVEL`
+| No
+| `info`
+| Logging level: `debug`, `info`, `warn`, `error`
+
+| `REFRESH_MINUTES`
+| No
+| `30`
+| REST API refresh interval in minutes when idle. 30 min = 48 calls/day (within the 50/day limit).
+
+| `ACTIVE_REFRESH_MINUTES`
+| No
+| `5`
+| REST API refresh interval while charging is active. The bridge detects charging automatically and switches to this faster rate.
+|===
+
+TIP: Set `LOG_LEVEL=debug` to see every incoming data point name and value — useful for discovering which keys your vehicle reports.
+
+== HTTP Endpoints
+
+=== Grouped Endpoints (JSON)
+
+These return flat JSON objects with all data points in a category. Every response includes a `last_updated` timestamp. Numeric values are JSON numbers; string values are JSON strings.
+
+[cols="2,3,3", options="header"]
+|===
+| Endpoint | Description | Example Keys
+
+| `GET /api/vehicle`
+| All data points (~290)
+| Everything below, plus climate timers, trip data, tyre pressures, etc.
+
+| `GET /api/battery`
+| Battery, charging, and electric range
+| `battery_soc`, `charging_status`, `charging_cable_status`, `charging_power_kw`, `electric_range_km`
+
+| `GET /api/fuel`
+| Fuel system and range
+| `fuel_remaining_liters`, `fuel_level_percent`, `total_range_km`
+
+| `GET /api/location`
+| GPS coordinates
+| `location_lat`, `location_lon`, `location_heading`
+
+| `GET /api/status`
+| Doors, windows, locks, body
+| `door_driver_front`, `lock_state`, `hood`, `tailgate`
+
+| `GET /api/health`
+| Application health
+| `status`, `mqtt_connected`, `data_points`, `uptime_seconds`
+
+| `POST /api/refresh`
+| Trigger immediate REST API data refresh
+| `status`, `message`
+|===
+
+=== Single-Value Endpoint (Plain Text)
+
+[source,text]
+----
+GET /api/raw/{name}
+----
+
+Returns a single data point value as plain text with `Content-Type: text/plain`. This is the simplest format for Loxone Virtual HTTP Inputs — no JSON parsing required.
+
+Returns `404 Not Found` if the key does not exist.
+
+== Data Point Reference
+
+=== Battery and Charging
+
+[cols="3,1,3", options="header"]
+|===
+| Key | Type | Description
+
+| `battery_soc`
+| Number
+| State of charge in percent (0–100)
+
+| `charging_status`
+| String
+| `CHARGING`, `CHARGINGENDED`, `NOT_CHARGING`, etc.
+
+| `charging_cable_status`
+| String
+| `CONNECTED`, `DISCONNECTED`
+
+| `charging_cable_lock`
+| String
+| `CHARGING_CABLE_LOCKED`, `UNLOCKED`
+
+| `charging_power_kw`
+| Number
+| Current charging power in kW (empty when not charging)
+
+| `charging_mode`
+| String
+| `NORMAL_PROGNOSE_BASED`, `IMMEDIATE`, etc.
+
+| `charging_connection_type`
+| String
+| `CONDUCTIVE`, etc.
+
+| `charging_connector_status`
+| String
+| `CONNECTED`, `DISCONNECTED`
+
+| `charging_time_remaining`
+| String
+| Remaining charging time
+
+| `charging_time_to_full`
+| String
+| Time until fully charged
+
+| `electric_range_km`
+| Number
+| Remaining electric range in km
+
+| `battery_max_energy`
+| Number
+| Maximum battery energy in kWh
+
+| `battery_soc_target`
+| Number
+| Target state of charge
+
+| `battery_health_percent`
+| Number
+| Battery state of health
+|===
+
+=== Fuel (PHEV)
+
+[cols="3,1,3", options="header"]
+|===
+| Key | Type | Description
+
+| `fuel_remaining_liters`
+| Number
+| Remaining fuel in liters
+
+| `fuel_level_percent`
+| Number
+| Fuel level in percent (0–100)
+
+| `total_range_km`
+| Number
+| Total combined range (electric + fuel) in km
+
+| `last_remaining_range_km`
+| Number
+| Last reported remaining range
+|===
+
+NOTE: BMW does not report a fuel-only range. Calculate it in Loxone as `total_range_km - electric_range_km`.
+
+=== Location
+
+[cols="3,1,3", options="header"]
+|===
+| Key | Type | Description
+
+| `location_lat`
+| Number
+| Latitude in degrees
+
+| `location_lon`
+| Number
+| Longitude in degrees
+
+| `location_heading`
+| Number
+| Heading in degrees
+|===
+
+=== Vehicle Status
+
+[cols="3,1,3", options="header"]
+|===
+| Key | Type | Description
+
+| `door_driver_front`
+| String
+| `CLOSED`, `OPEN`
+
+| `door_passenger_front`
+| String
+| `CLOSED`, `OPEN`
+
+| `door_driver_rear`
+| String
+| `CLOSED`, `OPEN`
+
+| `door_passenger_rear`
+| String
+| `CLOSED`, `OPEN`
+
+| `lock_state`
+| String
+| `SECURED`, `UNLOCKED`, etc.
+
+| `hood`
+| String
+| `CLOSED`, `OPEN`
+
+| `tailgate`
+| String
+| `CLOSED`, `OPEN`
+
+| `window_driver_front`
+| String
+| `CLOSED`, `OPEN`
+|===
+
+=== 12V Battery
+
+[cols="3,1,3", options="header"]
+|===
+| Key | Type | Description
+
+| `battery_12v_voltage`
+| Number
+| 12V battery voltage
+
+| `battery_12v_soc`
+| Number
+| 12V battery state of charge
+|===
+
+=== Discovering All Available Keys
+
+Your vehicle may report additional data points not listed above. To see all available keys:
+
+[source,bash]
+----
+curl -s http://localhost:8080/api/vehicle | python3 -m json.tool | head -100
+----
+
+Or list just the key names:
+
+[source,bash]
+----
+curl -s http://localhost:8080/api/vehicle | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for key in sorted(data.keys()):
+    if key != 'last_updated':
+        print(f'{key} = {data[key]}')
+"
+----
+
+== Loxone Integration
+
+=== Virtual HTTP Input (Recommended)
+
+For each data point you want in Loxone:
+
+. In Loxone Config, create a **Virtual HTTP Input**
+. Set the **URL** to the plain-text endpoint:
++
+[source,text]
+----
+http://<bridge-host>:8080/api/raw/battery_soc
+----
+. Set the **polling interval** (e.g., 60 seconds)
+. The value arrives as plain text — no JSON parsing needed
+. Connect the Virtual HTTP Input to your program logic
+
+=== Virtual HTTP Input with JSON (Multiple Values)
+
+To fetch multiple values in a single request:
+
+. Set the URL to a grouped endpoint:
++
+[source,text]
+----
+http://<bridge-host>:8080/api/battery
+----
+. Create **Virtual HTTP Input Commands** for each value you need
+. Use the key name as the JSON path (e.g., `battery_soc`, `charging_status`)
+
+=== Example: Charging Notification
+
+Create a Loxone program that:
+
+. Polls `http://<bridge-host>:8080/api/raw/charging_status` every 60 seconds
+. When the value changes to `CHARGINGENDED`, trigger a push notification
+. Optionally check `battery_soc` to report the final charge level
+
+=== Example: Geofencing
+
+. Poll `http://<bridge-host>:8080/api/location` every 60 seconds
+. Compare `location_lat` and `location_lon` against your home coordinates
+. Use the result to trigger "car is home" / "car is away" states
+
+== Architecture
+
+=== Project Structure
+
+[source,text]
+----
+bmw-loxone-bridge/
+├── cmd/bridge/main.go           # Entry point, wiring, signal handling
+├── internal/
+│   ├── config/config.go         # Environment variable configuration
+│   ├── store/store.go           # Thread-safe in-memory data store
+│   ├── bridge/bridge.go         # MQTT + REST data ingestion
+│   ├── handler/                 # HTTP endpoint handlers
+│   │   ├── handler.go           # Route registration, shared utilities
+│   │   ├── vehicle.go           # GET /api/vehicle
+│   │   ├── battery.go           # GET /api/battery
+│   │   ├── location.go          # GET /api/location
+│   │   ├── status.go            # GET /api/status
+│   │   ├── fuel.go              # GET /api/fuel
+│   │   ├── raw.go               # GET /api/raw/{name}
+│   │   └── health.go            # GET /api/health
+│   └── names/names.go           # BMW data point name mapping
+├── Containerfile                # Multi-stage Podman build
+├── run.sh                       # Development run helper script
+├── bmw-loxone-bridge.service    # systemd unit file (Fedora)
+├── env.example                  # Example .env file
+├── .env                         # Your credentials (git-ignored)
+├── go.mod / go.sum
+└── README.adoc                  # This file
+----
+
+=== Dependencies
+
+* https://github.com/tjamet/bmw-cardata[github.com/tjamet/bmw-cardata] — Go client for the BMW CarData API (OAuth, MQTT streaming, REST API)
+* Go standard library (`net/http`, `log/slog`, `sync`) — everything else
+
+=== Data Flow
+
+. **Startup**: authenticate via cached OAuth token (or device code flow on first run)
+. **REST fetch**: call `GetTelematicData` to populate all data points immediately
+. **MQTT subscribe**: connect to BMW's streaming broker for real-time updates
+. **Adaptive polling**: if charging is detected, poll REST API every 5 minutes; otherwise every 30 minutes
+. **HTTP serve**: Loxone polls endpoints; responses are built from the in-memory store
+. **Token refresh**: handled automatically by the library; transparent to the user
+
+=== Rate Limits
+
+[cols="2,2,3", options="header"]
+|===
+| Channel | Limit | Usage
+
+| MQTT Streaming
+| Unlimited
+| Primary data source, real-time updates (though BMW's broker can be unreliable)
+
+| REST API
+| 50 calls/day
+| Adaptive polling: ~48 calls/day when idle (30 min), faster while charging (5 min). Manual refresh via `POST /api/refresh` also counts.
+|===
+
+NOTE: A typical day with one 3-hour charge session uses ~36 (charging) + ~42 (idle) = ~78 REST calls. If you charge daily, consider setting `ACTIVE_REFRESH_MINUTES=10` to stay within the 50/day limit.
+
+== Troubleshooting
+
+=== Empty Responses
+
+If `/api/vehicle` returns `{}`:
+
+* Check `podman logs bmw-loxone-bridge` for errors
+* Verify authentication succeeded ("authentication successful" in logs)
+* Verify the container was found ("using existing container" or "found container after creation")
+* Verify telematic data was loaded ("loaded initial telematic data, data_points: 290")
+
+=== Re-Authentication Required
+
+If the container has been stopped for more than 2 weeks, the refresh token expires. Check the logs for a new device code prompt and complete the authentication again.
+
+=== MQTT Not Receiving Updates
+
+BMW's MQTT streaming is known to be unreliable — `client error: EOF` disconnections are common. The library reconnects automatically, but BMW's broker may not push all events.
+
+The bridge compensates with **adaptive REST polling**: it polls every 5 minutes while charging is active, and every 30 minutes when idle. Charging detection happens automatically based on the `charging_status` data point. You can also trigger an immediate refresh:
+
+[source,bash]
+----
+curl -X POST http://localhost:8080/api/refresh
+----
+
+=== Data Point Not Found
+
+If `/api/raw/{name}` returns `404`:
+
+. Check `/api/vehicle` to see all available keys
+. The key names are auto-generated from BMW's internal naming — use exactly the key as shown in `/api/vehicle`
+. Set `LOG_LEVEL=debug` to see every data point name as it arrives
+
+== License
+
+This project is provided as-is for personal home automation use.

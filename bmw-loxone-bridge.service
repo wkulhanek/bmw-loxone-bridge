@@ -1,0 +1,28 @@
+[Unit]
+Description=BMW CarData to Loxone HTTP Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PODMAN_SYSTEMD_UNIT=%n
+WorkingDirectory=/var/containers/bmw-loxone-bridge
+
+ExecStartPre=-/usr/bin/podman stop bmw-loxone-bridge
+ExecStartPre=-/usr/bin/podman rm bmw-loxone-bridge
+
+ExecStart=/usr/bin/podman run \
+  --name bmw-loxone-bridge \
+  --rm \
+  --env-file /var/containers/bmw-loxone-bridge/.env \
+  -p 8080:8080 \
+  -v /var/containers/bmw-loxone-bridge/data:/data:Z \
+  bmw-loxone-bridge:latest
+
+ExecStop=/usr/bin/podman stop bmw-loxone-bridge
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
