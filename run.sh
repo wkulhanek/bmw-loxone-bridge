@@ -12,7 +12,7 @@ podman run -d \
   --name "$CONTAINER" \
   --restart=always \
   --env-file "${SCRIPT_DIR}/.env" \
-  -p 8300:8300 \
+  -p 8400:8400 \
   -v "${SCRIPT_DIR}/data:/data:Z" \
   "$IMAGE"
 

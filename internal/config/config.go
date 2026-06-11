@@ -21,7 +21,7 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		ClientID:        os.Getenv("BMW_CLIENT_ID"),
 		VIN:             os.Getenv("BMW_VIN"),
-		ListenAddr:      envOrDefault("LISTEN_ADDR", ":8300"),
+		ListenAddr:      envOrDefault("LISTEN_ADDR", ":8400"),
 		DataDir:         envOrDefault("DATA_DIR", "/data"),
 		LogLevel:        envOrDefault("LOG_LEVEL", "info"),
 		RefreshInterval:      parseDurationMinutes("REFRESH_MINUTES", 30),

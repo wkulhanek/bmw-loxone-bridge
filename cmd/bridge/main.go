@@ -267,7 +267,7 @@ func setupLogger(level string) *slog.Logger {
 }
 
 func healthcheck() {
-	resp, err := http.Get("http://localhost:8300/api/health")
+	resp, err := http.Get("http://localhost:8400/api/health")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "health check failed: %v\n", err)
 		os.Exit(1)
