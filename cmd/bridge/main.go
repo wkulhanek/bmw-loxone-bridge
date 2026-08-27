@@ -197,14 +197,11 @@ func ensureContainer(ctx context.Context, client *bmwcardata.Client, logger *slo
 		),
 	)
 	resp, err := client.CreateContainer(ctx, containerName, "Loxone bridge data", descriptors)
-	if err == nil && resp != nil && resp.JSON201 != nil && resp.JSON201.ContainerId != nil {
-		logger.Info("created container", "id", *resp.JSON201.ContainerId)
-		return *resp.JSON201.ContainerId, nil
+	if err == nil && resp != nil && resp.ContainerId != nil {
+		logger.Info("created container", "id", *resp.ContainerId)
+		return *resp.ContainerId, nil
 	}
 	if err != nil {
-		// Library bug: CreateContainer only handles HTTP 200 but BMW API returns
-		// 201 Created, so successful creation is misreported as an error.
-		// Fall through to list containers and check if it was actually created.
 		logger.Debug("CreateContainer returned error (may be false negative)", "error", err)
 	}
 
