@@ -24,8 +24,8 @@ func Load() (*Config, error) {
 		ListenAddr:      envOrDefault("LISTEN_ADDR", ":8400"),
 		DataDir:         envOrDefault("DATA_DIR", "/data"),
 		LogLevel:        envOrDefault("LOG_LEVEL", "info"),
-		RefreshInterval:      parseDurationMinutes("REFRESH_MINUTES", 30),
-		ActiveRefreshInterval: parseDurationMinutes("ACTIVE_REFRESH_MINUTES", 5),
+		RefreshInterval:      parseDurationMinutes("REFRESH_MINUTES", 180),
+		ActiveRefreshInterval: parseDurationMinutes("ACTIVE_REFRESH_MINUTES", 20),
 	}
 	if cfg.ClientID == "" {
 		return nil, fmt.Errorf("BMW_CLIENT_ID environment variable is required")

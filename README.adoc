@@ -25,7 +25,7 @@ BMW CarData REST API (50 calls/day)
   ▼
 bmw-loxone-bridge (Go, ~10 MB container)
   ├── Startup fetch (populates all data points immediately)
-  ├── Adaptive polling (5 min charging / 30 min idle, configurable)
+  ├── Adaptive polling (20 min charging / 180 min idle, configurable)
   └── HTTP server (:8400)
         │
         ▼
@@ -37,7 +37,7 @@ On startup the bridge authenticates via OAuth 2.0 Device Code flow, then fetches
 === Key Features
 
 * **290+ data points** exposed from a BMW 225e (PHEV), including battery, charging, fuel, location, doors, windows, and more
-* **Adaptive REST polling** — every 5 minutes while charging, every 30 minutes when idle (configurable)
+* **Adaptive REST polling** — every 20 minutes while charging, every 180 minutes (3 hours) when idle (configurable)
 * **REST API initial fetch** — populates all data on startup so endpoints are never empty
 * **Manual refresh** — `POST /api/refresh` for instant data updates
 * **Plain-text single-value endpoints** (`/api/raw/{name}`) — simplest possible Loxone integration
@@ -208,12 +208,12 @@ All configuration is via environment variables.
 
 | `REFRESH_MINUTES`
 | No
-| `30`
-| REST API refresh interval in minutes when idle. 30 min = 48 calls/day (within the 50/day limit).
+| `180`
+| REST API refresh interval in minutes when idle. 180 min = 8 calls/day (well within the 50/day limit).
 
 | `ACTIVE_REFRESH_MINUTES`
 | No
-| `5`
+| `20`
 | REST API refresh interval while charging is active. The bridge detects charging automatically and switches to this faster rate.
 |===
 
@@ -539,7 +539,7 @@ bmw-loxone-bridge/
 
 . **Startup**: authenticate via cached OAuth token (or device code flow on first run)
 . **REST fetch**: call `GetTelematicData` to populate all data points immediately
-. **Adaptive polling**: if charging is detected, poll REST API every 5 minutes; otherwise every 30 minutes
+. **Adaptive polling**: if charging is detected, poll REST API every 20 minutes; otherwise every 180 minutes (3 hours)
 . **HTTP serve**: Loxone polls endpoints; responses are built from the in-memory store
 . **Token refresh**: handled automatically by the library; transparent to the user
 
@@ -547,12 +547,12 @@ bmw-loxone-bridge/
 
 BMW's CarData REST API allows **50 calls per day**.
 
-The default polling schedule uses ~48 calls/day when idle (30 min interval). With a 3-hour charge session at 5-minute intervals, that adds ~36 calls, totalling ~84 calls — exceeding the limit. If you charge daily, use more conservative intervals:
+The default schedule uses ~8 calls/day when idle (180 min interval). A 3-hour charge session at 20-minute intervals adds ~9 calls, so even daily charging stays well under the limit. Tighten the intervals if you need fresher data (but keep the idle + per-session total under 50):
 
 [source,text]
 ----
-REFRESH_MINUTES=30          # 48 calls/day at rest
-ACTIVE_REFRESH_MINUTES=10   # ~18 calls per charge session
+REFRESH_MINUTES=60          # 24 calls/day at rest
+ACTIVE_REFRESH_MINUTES=10   # ~18 calls per 3-hour charge session
 ----
 
 Manual refresh via `POST /api/refresh` also counts against the daily limit.
