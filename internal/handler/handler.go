@@ -9,17 +9,15 @@ import (
 )
 
 type Handler struct {
-	Store         *store.Store
-	StartTime     time.Time
-	MQTTConnected func() bool
-	RefreshFunc   func()
+	Store       *store.Store
+	StartTime   time.Time
+	RefreshFunc func()
 }
 
-func New(s *store.Store, mqttConnected func() bool) *Handler {
+func New(s *store.Store) *Handler {
 	return &Handler{
-		Store:         s,
-		StartTime:     time.Now(),
-		MQTTConnected: mqttConnected,
+		Store:     s,
+		StartTime: time.Now(),
 	}
 }
 
