@@ -13,10 +13,9 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, map[string]any{
-		"status":          "ok",
-		"mqtt_connected":  h.MQTTConnected(),
-		"data_points":     h.Store.Count(),
-		"last_message":    lastMsg,
-		"uptime_seconds":  int(time.Since(h.StartTime).Seconds()),
+		"status":         "ok",
+		"data_points":    h.Store.Count(),
+		"last_message":   lastMsg,
+		"uptime_seconds": int(time.Since(h.StartTime).Seconds()),
 	})
 }

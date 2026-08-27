@@ -18,29 +18,28 @@ This application connects to the https://bmw-cardata.bmwgroup.com/thirdparty/pub
 [source,text]
 ----
 BMW Vehicle
-  │  (telemetry events)
+  │  (telemetry)
   ▼
-BMW MQTT Broker (real-time streaming, unlimited)
+BMW CarData REST API (50 calls/day)
   │
   ▼
 bmw-loxone-bridge (Go, ~10 MB container)
-  ├── MQTT subscriber (live updates)
-  ├── REST API fallback (initial data on startup, 50 calls/day limit)
+  ├── Startup fetch (populates all data points immediately)
+  ├── Adaptive polling (5 min charging / 30 min idle, configurable)
   └── HTTP server (:8400)
         │
         ▼
 Loxone Miniserver (polls via Virtual HTTP Input)
 ----
 
-On startup the bridge authenticates via OAuth 2.0 Device Code flow, fetches an initial snapshot of all telemetry data through the BMW REST API, then subscribes to the MQTT stream for real-time updates. All data points are served through flat JSON or plain-text HTTP endpoints optimized for Loxone's limited JSON parser.
+On startup the bridge authenticates via OAuth 2.0 Device Code flow, then fetches a full snapshot of all telemetry data through the BMW REST API. It continues polling at a configurable interval and serves all data points through flat JSON or plain-text HTTP endpoints optimized for Loxone's limited JSON parser.
 
 === Key Features
 
 * **290+ data points** exposed from a BMW 225e (PHEV), including battery, charging, fuel, location, doors, windows, and more
-* **Real-time MQTT streaming** — unlimited, no rate limits
 * **Adaptive REST polling** — every 5 minutes while charging, every 30 minutes when idle (configurable)
-* **Manual refresh** — `POST /api/refresh` for instant data updates
 * **REST API initial fetch** — populates all data on startup so endpoints are never empty
+* **Manual refresh** — `POST /api/refresh` for instant data updates
 * **Plain-text single-value endpoints** (`/api/raw/{name}`) — simplest possible Loxone integration
 * **~10 MB container image** — distroless, runs as non-root
 * **Automatic token refresh** — re-authentication only needed if the container is stopped for more than 2 weeks
@@ -51,7 +50,7 @@ On startup the bridge authenticates via OAuth 2.0 Device Code flow, fetches an i
 
 . Register at https://bmw-cardata.bmwgroup.com/thirdparty/public/home
 . Create a **Client ID** under "My Clients"
-. Enable permissions for both **CarData API** and **CarData Stream**
+. Enable permissions for **CarData API**
 . Note your **Client ID** (UUID format)
 . Note your vehicle's **VIN** (17 characters, found in your BMW app or registration documents)
 
@@ -252,7 +251,7 @@ These return flat JSON objects with all data points in a category. Every respons
 
 | `GET /api/health`
 | Application health
-| `status`, `mqtt_connected`, `data_points`, `uptime_seconds`
+| `status`, `data_points`, `last_message`, `uptime_seconds`
 
 | `POST /api/refresh`
 | Trigger immediate REST API data refresh
@@ -533,34 +532,30 @@ bmw-loxone-bridge/
 
 === Dependencies
 
-* https://github.com/tjamet/bmw-cardata[github.com/tjamet/bmw-cardata] — Go client for the BMW CarData API (OAuth, MQTT streaming, REST API)
+* https://github.com/tjamet/bmw-cardata[github.com/tjamet/bmw-cardata] — Go client for the BMW CarData API (OAuth device code flow, REST API)
 * Go standard library (`net/http`, `log/slog`, `sync`) — everything else
 
 === Data Flow
 
 . **Startup**: authenticate via cached OAuth token (or device code flow on first run)
 . **REST fetch**: call `GetTelematicData` to populate all data points immediately
-. **MQTT subscribe**: connect to BMW's streaming broker for real-time updates
 . **Adaptive polling**: if charging is detected, poll REST API every 5 minutes; otherwise every 30 minutes
 . **HTTP serve**: Loxone polls endpoints; responses are built from the in-memory store
 . **Token refresh**: handled automatically by the library; transparent to the user
 
 === Rate Limits
 
-[cols="2,2,3", options="header"]
-|===
-| Channel | Limit | Usage
+BMW's CarData REST API allows **50 calls per day**.
 
-| MQTT Streaming
-| Unlimited
-| Primary data source, real-time updates (though BMW's broker can be unreliable)
+The default polling schedule uses ~48 calls/day when idle (30 min interval). With a 3-hour charge session at 5-minute intervals, that adds ~36 calls, totalling ~84 calls — exceeding the limit. If you charge daily, use more conservative intervals:
 
-| REST API
-| 50 calls/day
-| Adaptive polling: ~48 calls/day when idle (30 min), faster while charging (5 min). Manual refresh via `POST /api/refresh` also counts.
-|===
+[source,text]
+----
+REFRESH_MINUTES=30          # 48 calls/day at rest
+ACTIVE_REFRESH_MINUTES=10   # ~18 calls per charge session
+----
 
-NOTE: A typical day with one 3-hour charge session uses ~36 (charging) + ~42 (idle) = ~78 REST calls. If you charge daily, consider setting `ACTIVE_REFRESH_MINUTES=10` to stay within the 50/day limit.
+Manual refresh via `POST /api/refresh` also counts against the daily limit.
 
 == Troubleshooting
 
@@ -571,22 +566,11 @@ If `/api/vehicle` returns `{}`:
 * Check `podman logs bmw-loxone-bridge` for errors
 * Verify authentication succeeded ("authentication successful" in logs)
 * Verify the container was found ("using existing container" or "found container after creation")
-* Verify telematic data was loaded ("loaded initial telematic data, data_points: 290")
+* Verify telematic data was loaded ("telematic data loaded, data_points: 290")
 
 === Re-Authentication Required
 
 If the container has been stopped for more than 2 weeks, the refresh token expires. Check the logs for a new device code prompt and complete the authentication again.
-
-=== MQTT Not Receiving Updates
-
-BMW's MQTT streaming is known to be unreliable — `client error: EOF` disconnections are common. The library reconnects automatically, but BMW's broker may not push all events.
-
-The bridge compensates with **adaptive REST polling**: it polls every 5 minutes while charging is active, and every 30 minutes when idle. Charging detection happens automatically based on the `charging_status` data point. You can also trigger an immediate refresh:
-
-[source,bash]
-----
-curl -X POST http://localhost:8400/api/refresh
-----
 
 === Data Point Not Found
 

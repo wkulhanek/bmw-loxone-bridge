@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -48,6 +47,7 @@ func main() {
 
 	auth, err := bmwcardata.NewAuthenticator(
 		bmwcardata.WithClientID(cfg.ClientID),
+		bmwcardata.WithScopes([]bmwcardata.Scope{bmwcardata.ScopeOpenID, bmwcardata.ScopeCardataAPI, bmwcardata.ScopeAuthenticateUser}),
 		bmwcardata.WithSessionStore(sessionStore),
 		bmwcardata.WithPromptURI(func(verificationURI, userCode string) {
 			fmt.Println("=== BMW CarData Authentication ===")
@@ -85,19 +85,6 @@ func main() {
 		fetchTelematicData(ctx, client, b, cfg.VIN, containerID, logger)
 	}
 
-	var mqttConnected atomic.Bool
-	mqttConnected.Store(true)
-
-	sub, err := client.Subscribe(ctx, cfg.VIN, b.HandleMessage)
-	if err != nil {
-		logger.Error("failed to subscribe to vehicle stream", "error", err)
-		os.Exit(1)
-	}
-	logger.Info("subscribed to vehicle stream", "vin", cfg.VIN, "subscription", sub.ID)
-
-	client.StartEventStream()
-	logger.Info("MQTT event stream started")
-
 	if containerID != "" && cfg.RefreshInterval > 0 {
 		initialInterval := cfg.RefreshInterval
 		if isCharging(dataStore) {
@@ -132,7 +119,7 @@ func main() {
 		)
 	}
 
-	h := handler.New(dataStore, func() bool { return mqttConnected.Load() })
+	h := handler.New(dataStore)
 	if containerID != "" {
 		h.RefreshFunc = func() {
 			fetchTelematicData(ctx, client, b, cfg.VIN, containerID, logger)
@@ -156,17 +143,12 @@ func main() {
 		}
 	}()
 
-	select {
-	case <-ctx.Done():
-		logger.Info("shutdown signal received")
-	case <-client.Done():
-		logger.Warn("MQTT client disconnected unexpectedly")
-	}
+	<-ctx.Done()
+	logger.Info("shutdown signal received")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 
-	client.StopEventStream()
 	server.Shutdown(shutdownCtx)
 	logger.Info("shutdown complete")
 }
@@ -197,14 +179,11 @@ func ensureContainer(ctx context.Context, client *bmwcardata.Client, logger *slo
 		),
 	)
 	resp, err := client.CreateContainer(ctx, containerName, "Loxone bridge data", descriptors)
-	if err == nil && resp != nil && resp.JSON201 != nil && resp.JSON201.ContainerId != nil {
-		logger.Info("created container", "id", *resp.JSON201.ContainerId)
-		return *resp.JSON201.ContainerId, nil
+	if err == nil && resp != nil && resp.ContainerId != nil {
+		logger.Info("created container", "id", *resp.ContainerId)
+		return *resp.ContainerId, nil
 	}
 	if err != nil {
-		// Library bug: CreateContainer only handles HTTP 200 but BMW API returns
-		// 201 Created, so successful creation is misreported as an error.
-		// Fall through to list containers and check if it was actually created.
 		logger.Debug("CreateContainer returned error (may be false negative)", "error", err)
 	}
 
